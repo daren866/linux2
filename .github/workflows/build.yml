@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # 使用更稳定的 Ubuntu 22.04
     
     outputs:
       release_title: ${{ steps.set-release-info.outputs.release_title }}
@@ -152,7 +152,11 @@ jobs:
     - name: Install dependencies
       run: |
         echo "📦 安装编译依赖..."
+        
+        # 更新包列表
         sudo apt-get update
+        
+        # 安装所有依赖
         sudo apt-get install -y \
           build-essential \
           libncurses-dev \
@@ -176,13 +180,46 @@ jobs:
           texinfo \
           python3 \
           python3-dev \
-          rsync
+          rsync \
+          git \
+          curl \
+          xz-utils
         
         # 验证 bc 是否安装成功
+        echo ""
         echo "🔍 验证关键工具:"
-        bc --version || echo "❌ bc 未安装!"
-        make --version | head -1
-        gcc --version | head -1
+        echo "----------------"
+        echo -n "bc: "
+        bc --version 2>/dev/null | head -1 || echo "❌ 未安装!"
+        echo -n "make: "
+        make --version 2>/dev/null | head -1 || echo "❌ 未安装!"
+        echo -n "gcc: "
+        gcc --version 2>/dev/null | head -1 || echo "❌ 未安装!"
+        echo -n "flex: "
+        flex --version 2>/dev/null | head -1 || echo "❌ 未安装!"
+        echo -n "bison: "
+        bison --version 2>/dev/null | head -1 || echo "❌ 未安装!"
+        echo "----------------"
+        
+        # 如果 bc 未安装，尝试其他方法安装
+        if ! command -v bc &> /dev/null; then
+          echo "⚠️ 尝试通过其他方式安装 bc..."
+          sudo apt-get install -y bc --fix-missing || true
+          
+          # 如果还是不行，从源码编译 bc
+          if ! command -v bc &> /dev/null; then
+            echo "📦 从源码编译 bc..."
+            cd /tmp
+            wget https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz
+            tar -xzf bc-1.07.1.tar.gz
+            cd bc-1.07.1
+            ./configure --prefix=/usr
+            make
+            sudo make install
+            cd -
+            echo "✅ bc 从源码编译安装完成"
+          fi
+        fi
         
         echo "✅ 依赖安装完成"
 
@@ -284,7 +321,7 @@ jobs:
           echo "✅ BusyBox 源码已提交到仓库"
         fi
 
-    # ===== 配置内核（添加 bc 路径检查）=====
+    # ===== 配置内核 =====
     - name: Configure kernel
       run: |
         cd linux2/linux-6.18
@@ -292,14 +329,15 @@ jobs:
         echo "🔧 配置内核..."
         
         # 确保 bc 可用
+        export PATH=/usr/bin:$PATH
         if ! command -v bc &> /dev/null; then
           echo "❌ 错误: bc 命令未找到!"
           echo "尝试重新安装 bc..."
-          sudo apt-get install -y bc
+          sudo apt-get install -y bc || sudo apt-get install -y bc --fix-missing
         fi
         
         echo "✅ bc 已安装: $(which bc)"
-        bc --version | head -1
+        bc --version | head -1 || echo "bc 无法显示版本"
         
         # 检查是否有预配置的内核配置文件
         if [ -f ".config" ]; then
@@ -331,7 +369,7 @@ jobs:
         make olddefconfig
         echo "✅ 内核配置完成"
 
-    # ===== 编译内核（修复 bc 错误）=====
+    # ===== 编译内核 =====
     - name: Build kernel
       run: |
         cd linux2/linux-6.18
@@ -345,20 +383,47 @@ jobs:
           echo "开始编译时间: $(date)"
           echo "使用 $(nproc) 个CPU核心编译"
           
+          # 设置环境变量
+          export PATH=/usr/bin:$PATH
+          
           # 清理可能的编译残留
           make clean || true
           
-          # 使用更稳定的编译参数
-          make -j$(nproc) bzImage 2>&1 | tee build.log
-          make -j$(nproc) modules 2>&1 | tee -a build.log
+          # 生成 timeconst 文件（修复 bc 错误）
+          echo "🔧 预生成 timeconst.h..."
+          if [ -f "kernel/time/timeconst.bc" ]; then
+            echo "✅ timeconst.bc 已存在"
+          else
+            echo "⚠️ timeconst.bc 不存在，尝试生成..."
+            # 创建 timeconst.bc 文件
+            cat > kernel/time/timeconst.bc << 'EOF'
+            /* Simplified timeconst.bc for kernel build */
+            define hz_to_sec(hz) {
+              return 1000000000 / hz
+            }
+            define hz_to_usec(hz) {
+              return 1000000 / hz
+            }
+            define hz_to_msec(hz) {
+              return 1000 / hz
+            }
+            EOF
+          fi
+          
+          # 使用更稳定的编译参数，减少并行数
+          echo "🔨 开始编译内核..."
+          make -j$((nproc/2)) bzImage 2>&1 | tee build.log
           
           # 检查编译是否成功
           if [ ! -f "arch/x86/boot/bzImage" ]; then
             echo "❌ 内核编译失败！"
-            echo "最后50行日志:"
-            tail -50 build.log
+            echo "最后100行日志:"
+            tail -100 build.log
             exit 1
           fi
+          
+          # 编译模块
+          make -j$((nproc/2)) modules 2>&1 | tee -a build.log
           
           end_time=$(date +%s)
           duration=$((end_time - start_time))
