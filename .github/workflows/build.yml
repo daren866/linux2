@@ -352,7 +352,20 @@ jobs:
           start_time=$(date +%s)
           
           echo "开始编译时间: $(date)"
-          echo "使用 $(nproc) 个CPU核心编译"
+          
+          # 获取CPU核心数，确保至少为1
+          CPU_CORES=$(nproc)
+          if [ -z "$CPU_CORES" ] || [ "$CPU_CORES" -lt 1 ]; then
+            CPU_CORES=2
+          fi
+          echo "系统检测到 $CPU_CORES 个CPU核心"
+          
+          # 计算并行编译数（核心数的一半，但至少为1）
+          PARALLEL_JOBS=$((CPU_CORES / 2))
+          if [ "$PARALLEL_JOBS" -lt 1 ]; then
+            PARALLEL_JOBS=1
+          fi
+          echo "使用 $PARALLEL_JOBS 个并行任务编译"
           
           # 设置环境变量
           export PATH=/usr/bin:$PATH
@@ -370,9 +383,9 @@ jobs:
             echo 'define hz_to_msec(hz) { return 1000 / hz }' >> kernel/time/timeconst.bc
           fi
           
-          # 使用更稳定的编译参数
+          # 使用计算出的并行数编译
           echo "🔨 开始编译内核..."
-          make -j$((nproc/2)) bzImage 2>&1 | tee build.log
+          make -j${PARALLEL_JOBS} bzImage 2>&1 | tee build.log
           
           # 检查编译是否成功
           if [ ! -f "arch/x86/boot/bzImage" ]; then
@@ -383,7 +396,7 @@ jobs:
           fi
           
           # 编译模块
-          make -j$((nproc/2)) modules 2>&1 | tee -a build.log
+          make -j${PARALLEL_JOBS} modules 2>&1 | tee -a build.log
           
           end_time=$(date +%s)
           duration=$((end_time - start_time))
@@ -430,11 +443,17 @@ jobs:
       run: |
         cd linux2/busybox-1.36.1
         
+        # 获取CPU核心数
+        CPU_CORES=$(nproc)
+        if [ -z "$CPU_CORES" ] || [ "$CPU_CORES" -lt 1 ]; then
+          CPU_CORES=2
+        fi
+        
         if [ -f "busybox" ] && [ "${{ steps.busybox-cache.outputs.cache-hit }}" == "true" ]; then
           echo "✅ 使用缓存的 BusyBox，跳过编译"
         else
           echo "🔨 编译 BusyBox 中..."
-          make -j$(nproc)
+          make -j${CPU_CORES}
           make install
           echo "✅ BusyBox 编译完成"
         fi
