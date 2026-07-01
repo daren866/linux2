@@ -12,12 +12,12 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04  # 使用更稳定的 Ubuntu 22.04
+    runs-on: ubuntu-22.04
     
     outputs:
       release_title: ${{ steps.set-release-info.outputs.release_title }}
       release_tag: ${{ steps.set-release-info.outputs.release_tag }}
-      iso_path: ${{ steps.set-release-info.outputs.iso_path }}
+      iso_name: ${{ steps.set-release-info.outputs.iso_name }}
     
     steps:
     # ===== 克隆指定仓库 =====
@@ -148,7 +148,7 @@ jobs:
           echo "❌ BusyBox缓存未命中" >> $GITHUB_STEP_SUMMARY
         fi
 
-    # ===== 安装依赖（修复版）=====
+    # ===== 安装依赖 =====
     - name: Install dependencies
       run: |
         echo "📦 安装编译依赖..."
@@ -189,37 +189,12 @@ jobs:
         echo ""
         echo "🔍 验证关键工具:"
         echo "----------------"
-        echo -n "bc: "
-        bc --version 2>/dev/null | head -1 || echo "❌ 未安装!"
-        echo -n "make: "
-        make --version 2>/dev/null | head -1 || echo "❌ 未安装!"
-        echo -n "gcc: "
-        gcc --version 2>/dev/null | head -1 || echo "❌ 未安装!"
-        echo -n "flex: "
-        flex --version 2>/dev/null | head -1 || echo "❌ 未安装!"
-        echo -n "bison: "
-        bison --version 2>/dev/null | head -1 || echo "❌ 未安装!"
+        command -v bc && echo "✅ bc 已安装: $(bc --version | head -1)" || echo "❌ bc 未安装!"
+        command -v make && echo "✅ make 已安装: $(make --version | head -1)" || echo "❌ make 未安装!"
+        command -v gcc && echo "✅ gcc 已安装: $(gcc --version | head -1)" || echo "❌ gcc 未安装!"
+        command -v flex && echo "✅ flex 已安装: $(flex --version | head -1)" || echo "❌ flex 未安装!"
+        command -v bison && echo "✅ bison 已安装: $(bison --version | head -1)" || echo "❌ bison 未安装!"
         echo "----------------"
-        
-        # 如果 bc 未安装，尝试其他方法安装
-        if ! command -v bc &> /dev/null; then
-          echo "⚠️ 尝试通过其他方式安装 bc..."
-          sudo apt-get install -y bc --fix-missing || true
-          
-          # 如果还是不行，从源码编译 bc
-          if ! command -v bc &> /dev/null; then
-            echo "📦 从源码编译 bc..."
-            cd /tmp
-            wget https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz
-            tar -xzf bc-1.07.1.tar.gz
-            cd bc-1.07.1
-            ./configure --prefix=/usr
-            make
-            sudo make install
-            cd -
-            echo "✅ bc 从源码编译安装完成"
-          fi
-        fi
         
         echo "✅ 依赖安装完成"
 
@@ -245,7 +220,6 @@ jobs:
           
           # 下载内核源码
           echo "📥 下载内核源码 linux-6.18..."
-          echo "下载地址: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz"
           wget -q --show-progress https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz
           echo "✅ 内核源码下载完成"
           
@@ -294,7 +268,6 @@ jobs:
           
           # 下载 BusyBox 源码
           echo "📥 下载 BusyBox 1.36.1..."
-          echo "下载地址: https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
           wget -q --show-progress https://busybox.net/downloads/busybox-1.36.1.tar.bz2
           echo "✅ BusyBox 下载完成"
           
@@ -332,12 +305,10 @@ jobs:
         export PATH=/usr/bin:$PATH
         if ! command -v bc &> /dev/null; then
           echo "❌ 错误: bc 命令未找到!"
-          echo "尝试重新安装 bc..."
-          sudo apt-get install -y bc || sudo apt-get install -y bc --fix-missing
+          sudo apt-get install -y bc --fix-missing
         fi
         
         echo "✅ bc 已安装: $(which bc)"
-        bc --version | head -1 || echo "bc 无法显示版本"
         
         # 检查是否有预配置的内核配置文件
         if [ -f ".config" ]; then
@@ -389,28 +360,17 @@ jobs:
           # 清理可能的编译残留
           make clean || true
           
-          # 生成 timeconst 文件（修复 bc 错误）
-          echo "🔧 预生成 timeconst.h..."
-          if [ -f "kernel/time/timeconst.bc" ]; then
-            echo "✅ timeconst.bc 已存在"
-          else
-            echo "⚠️ timeconst.bc 不存在，尝试生成..."
-            # 创建 timeconst.bc 文件
-            cat > kernel/time/timeconst.bc << 'EOF'
-            /* Simplified timeconst.bc for kernel build */
-            define hz_to_sec(hz) {
-              return 1000000000 / hz
-            }
-            define hz_to_usec(hz) {
-              return 1000000 / hz
-            }
-            define hz_to_msec(hz) {
-              return 1000 / hz
-            }
-            EOF
+          # 生成缺失的 timeconst.bc 文件
+          if [ ! -f "kernel/time/timeconst.bc" ]; then
+            echo "🔧 生成 timeconst.bc 文件..."
+            mkdir -p kernel/time
+            echo '/* Dummy timeconst.bc for kernel build */' > kernel/time/timeconst.bc
+            echo 'define hz_to_sec(hz) { return 1000000000 / hz }' >> kernel/time/timeconst.bc
+            echo 'define hz_to_usec(hz) { return 1000000 / hz }' >> kernel/time/timeconst.bc
+            echo 'define hz_to_msec(hz) { return 1000 / hz }' >> kernel/time/timeconst.bc
           fi
           
-          # 使用更稳定的编译参数，减少并行数
+          # 使用更稳定的编译参数
           echo "🔨 开始编译内核..."
           make -j$((nproc/2)) bzImage 2>&1 | tee build.log
           
@@ -434,6 +394,7 @@ jobs:
         echo "内核位置: $(pwd)/arch/x86/boot/bzImage"
         ls -lh arch/x86/boot/bzImage
 
+    # ===== 配置 BusyBox =====
     - name: Configure BusyBox
       run: |
         cd linux2/busybox-1.36.1
@@ -464,6 +425,7 @@ jobs:
         make oldconfig
         echo "✅ BusyBox 配置完成"
 
+    # ===== 编译 BusyBox =====
     - name: Build BusyBox
       run: |
         cd linux2/busybox-1.36.1
@@ -539,6 +501,7 @@ jobs:
 
     # ===== 创建 ISO =====
     - name: Create bootable ISO
+      id: create-iso
       run: |
         cd linux2
         
@@ -549,7 +512,7 @@ jobs:
         cp linux-6.18/arch/x86/boot/bzImage iso/boot/vmlinuz
         cp rootfs.cpio iso/boot/initramfs.cpio
         
-        cat > iso/boot/grub/grub.cfg << EOF
+        cat > iso/boot/grub/grub.cfg << 'EOF'
         set default=0
         set timeout=3
         
@@ -565,17 +528,21 @@ jobs:
         EOF
         
         # 使用动态生成的ISO名称
-        grub-mkrescue -o "${{ env.ISO_NAME }}" iso/
+        ISO_NAME="${{ steps.set-release-info.outputs.iso_name }}"
+        grub-mkrescue -o "$ISO_NAME" iso/
         
-        echo "✅ ISO 创建完成: ${{ env.ISO_NAME }}"
-        echo "📊 ISO 大小: $(du -h ${{ env.ISO_NAME }} | cut -f1)"
+        echo "✅ ISO 创建完成: $ISO_NAME"
+        echo "📊 ISO 大小: $(du -h $ISO_NAME | cut -f1)"
+        
+        # 设置输出变量
+        echo "iso_path=linux2/$ISO_NAME" >> $GITHUB_OUTPUT
 
-    # ===== 上传 ISO 到 Artifacts（备份）=====
+    # ===== 上传 ISO 到 Artifacts =====
     - name: Upload ISO to Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.ISO_NAME }}
-        path: linux2/${{ env.ISO_NAME }}
+        name: ${{ steps.set-release-info.outputs.iso_name }}
+        path: linux2/${{ steps.set-release-info.outputs.iso_name }}
         retention-days: 30
 
     # ===== 创建 GitHub Release =====
@@ -612,9 +579,9 @@ jobs:
             
           ### 📊 构建统计
           - **缓存命中**: 内核:${{ steps.kernel-cache.outputs.cache-hit }}, BusyBox:${{ steps.busybox-cache.outputs.cache-hit }}
-          - **ISO大小**: $(du -h linux2/${{ env.ISO_NAME }} | cut -f1)
+          - **ISO大小**: $(du -h linux2/${{ steps.set-release-info.outputs.iso_name }} | cut -f1)
         files: |
-          linux2/${{ env.ISO_NAME }}
+          linux2/${{ steps.set-release-info.outputs.iso_name }}
         draft: false
         prerelease: false
         generate_release_notes: false
@@ -633,7 +600,7 @@ jobs:
         echo "### Release信息" >> $GITHUB_STEP_SUMMARY
         echo "- **Release标题**: ${{ steps.set-release-info.outputs.release_title }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Release标签**: ${{ steps.set-release-info.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **ISO文件**: ${{ env.ISO_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **ISO文件**: ${{ steps.set-release-info.outputs.iso_name }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Unix时间戳**: ${{ steps.set-release-info.outputs.release_number }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
@@ -647,4 +614,4 @@ jobs:
         echo "- **内核文件**: $(du -h linux-6.18/arch/x86/boot/bzImage | cut -f1)" >> $GITHUB_STEP_SUMMARY
         echo "- **BusyBox**: $(du -h busybox-1.36.1/busybox | cut -f1)" >> $GITHUB_STEP_SUMMARY
         echo "- **rootfs.cpio**: $(du -h rootfs.cpio | cut -f1)" >> $GITHUB_STEP_SUMMARY
-        echo "- **ISO文件**: $(du -h ${{ env.ISO_NAME }} | cut -f1)" >> $GITHUB_STEP_SUMMARY
+        echo "- **ISO文件**: $(du -h ${{ steps.set-release-info.outputs.iso_name }} | cut -f1)" >> $GITHUB_STEP_SUMMARY
