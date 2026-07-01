@@ -20,15 +20,65 @@ jobs:
       iso_path: ${{ steps.set-release-info.outputs.iso_path }}
     
     steps:
-    - name: Checkout repository
+    # ===== 克隆指定仓库 =====
+    - name: Clone repository
       uses: actions/checkout@v4
       with:
+        repository: daren866/linux2
+        path: linux2
         fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    # ===== 进入工作目录 =====
+    - name: Enter workspace
+      run: |
+        cd linux2
+        echo "📂 当前工作目录: $(pwd)"
+        echo "📂 仓库内容:"
+        ls -la
+
+    # ===== 显示仓库信息 =====
+    - name: Show repository info
+      run: |
+        cd linux2
+        
+        echo "## 📂 仓库信息" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 仓库状态" >> $GITHUB_STEP_SUMMARY
+        echo "- **仓库地址**: https://github.com/daren866/linux2" >> $GITHUB_STEP_SUMMARY
+        echo "- **当前分支**: $(git branch --show-current)" >> $GITHUB_STEP_SUMMARY
+        echo "- **最新提交**: $(git log -1 --pretty=format:'%h - %s (%an)')" >> $GITHUB_STEP_SUMMARY
+        echo "- **提交时间**: $(git log -1 --pretty=format:'%ai')" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 仓库大小" >> $GITHUB_STEP_SUMMARY
+        echo "- **总大小**: $(du -sh . | cut -f1)" >> $GITHUB_STEP_SUMMARY
+        echo "- **文件数量**: $(find . -type f | wc -l)" >> $GITHUB_STEP_SUMMARY
+        echo "- **目录数量**: $(find . -type d | wc -l)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 主要目录" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        ls -lah --color=never | head -20 >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        
+        # 显示在控制台
+        echo ""
+        echo "📂 仓库克隆完成!"
+        echo "当前目录: $(pwd)"
+        echo "仓库大小: $(du -sh . | cut -f1)"
+        echo "文件数量: $(find . -type f | wc -l)"
+        echo ""
+        echo "📋 目录结构:"
+        ls -la
 
     # ===== 设置Release信息 =====
     - name: Set release info
       id: set-release-info
       run: |
+        cd linux2
+        
         # 获取Unix时间戳
         UNIX_TIMESTAMP=$(date +%s)
         echo "Unix时间戳: $UNIX_TIMESTAMP"
@@ -59,8 +109,8 @@ jobs:
       uses: actions/cache@v4
       id: kernel-cache
       with:
-        path: linux-6.18
-        key: kernel-6.18-${{ hashFiles('linux-6.18/**') }}
+        path: linux2/linux-6.18
+        key: kernel-6.18-${{ hashFiles('linux2/linux-6.18/**') }}
         restore-keys: |
           kernel-6.18-
 
@@ -69,13 +119,15 @@ jobs:
       uses: actions/cache@v4
       id: busybox-cache
       with:
-        path: busybox-1.36.1
-        key: busybox-1.36.1-${{ hashFiles('busybox-1.36.1/**') }}
+        path: linux2/busybox-1.36.1
+        key: busybox-1.36.1-${{ hashFiles('linux2/busybox-1.36.1/**') }}
         restore-keys: |
           busybox-1.36.1-
 
     - name: Check cache status
       run: |
+        cd linux2
+        
         echo "## 🔍 缓存状态" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
@@ -98,6 +150,7 @@ jobs:
 
     - name: Install dependencies
       run: |
+        echo "📦 安装编译依赖..."
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
@@ -114,16 +167,22 @@ jobs:
           grub-common \
           mtools \
           dosfstools
+        echo "✅ 依赖安装完成"
 
     # ===== 内核部分 - 从仓库同步或自动下载 =====
     - name: Sync kernel source from repository
       if: steps.kernel-cache.outputs.cache-hit != 'true'
       run: |
+        cd linux2
+        
         echo "📥 检查内核源码..."
         
         # 检查内核源码是否在仓库中
         if [ -d "linux-6.18" ] && [ -f "linux-6.18/Makefile" ]; then
           echo "✅ 找到内核源码目录，使用仓库中的源码"
+          echo "📊 内核源码大小: $(du -sh linux-6.18 | cut -f1)"
+          echo "📊 内核文件数量: $(find linux-6.18 -type f | wc -l)"
+          echo ""
           echo "内核版本信息:"
           head -5 linux-6.18/Makefile
         else
@@ -132,12 +191,19 @@ jobs:
           
           # 下载内核源码
           echo "📥 下载内核源码 linux-6.18..."
+          echo "下载地址: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz"
           wget -q --show-progress https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz
-          tar -xf linux-6.18.tar.xz
           echo "✅ 内核源码下载完成"
+          
+          echo "📦 解压内核源码..."
+          tar -xf linux-6.18.tar.xz
+          echo "✅ 内核源码解压完成"
           
           # 清理下载的压缩包
           rm -f linux-6.18.tar.xz
+          
+          echo "📊 内核源码大小: $(du -sh linux-6.18 | cut -f1)"
+          echo "📊 内核文件数量: $(find linux-6.18 -type f | wc -l)"
           
           # 配置 Git
           git config user.name "github-actions[bot]"
@@ -156,11 +222,16 @@ jobs:
     - name: Sync BusyBox source from repository
       if: steps.busybox-cache.outputs.cache-hit != 'true'
       run: |
+        cd linux2
+        
         echo "📥 检查 BusyBox 源码..."
         
         # 检查 BusyBox 源码是否在仓库中
         if [ -d "busybox-1.36.1" ] && [ -f "busybox-1.36.1/Makefile" ]; then
           echo "✅ 找到 BusyBox 源码目录，使用仓库中的源码"
+          echo "📊 BusyBox 源码大小: $(du -sh busybox-1.36.1 | cut -f1)"
+          echo "📊 BusyBox 文件数量: $(find busybox-1.36.1 -type f | wc -l)"
+          echo ""
           echo "BusyBox 版本信息:"
           head -5 busybox-1.36.1/Makefile
         else
@@ -169,12 +240,19 @@ jobs:
           
           # 下载 BusyBox 源码
           echo "📥 下载 BusyBox 1.36.1..."
+          echo "下载地址: https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
           wget -q --show-progress https://busybox.net/downloads/busybox-1.36.1.tar.bz2
-          tar -xf busybox-1.36.1.tar.bz2
           echo "✅ BusyBox 下载完成"
+          
+          echo "📦 解压 BusyBox 源码..."
+          tar -xf busybox-1.36.1.tar.bz2
+          echo "✅ BusyBox 解压完成"
           
           # 清理下载的压缩包
           rm -f busybox-1.36.1.tar.bz2
+          
+          echo "📊 BusyBox 源码大小: $(du -sh busybox-1.36.1 | cut -f1)"
+          echo "📊 BusyBox 文件数量: $(find busybox-1.36.1 -type f | wc -l)"
           
           # 配置 Git
           git config user.name "github-actions[bot]"
@@ -191,7 +269,9 @@ jobs:
 
     - name: Configure kernel
       run: |
-        cd linux-6.18
+        cd linux2/linux-6.18
+        
+        echo "🔧 配置内核..."
         
         # 检查是否有预配置的内核配置文件
         if [ -f ".config" ]; then
@@ -221,10 +301,11 @@ jobs:
         scripts/config --disable WLAN
         
         make olddefconfig
+        echo "✅ 内核配置完成"
 
     - name: Build kernel
       run: |
-        cd linux-6.18
+        cd linux2/linux-6.18
         
         if [ -f "arch/x86/boot/bzImage" ] && [ "${{ steps.kernel-cache.outputs.cache-hit }}" == "true" ]; then
           echo "✅ 使用缓存的内核，跳过编译"
@@ -232,20 +313,22 @@ jobs:
           echo "🔨 编译内核中（这需要约30分钟）..."
           start_time=$(date +%s)
           
+          echo "开始编译时间: $(date)"
           make -j$(nproc) bzImage
           make -j$(nproc) modules
           
           end_time=$(date +%s)
           duration=$((end_time - start_time))
-          echo "✅ 内核编译完成，耗时: $((duration / 60)) 分钟"
+          echo "✅ 内核编译完成，耗时: $((duration / 60)) 分钟 $((duration % 60)) 秒"
         fi
         
+        echo "📊 内核文件信息:"
         echo "内核位置: $(pwd)/arch/x86/boot/bzImage"
         ls -lh arch/x86/boot/bzImage
 
     - name: Configure BusyBox
       run: |
-        cd busybox-1.36.1
+        cd linux2/busybox-1.36.1
         
         echo "🔧 配置 BusyBox..."
         
@@ -271,10 +354,11 @@ jobs:
         sed -i 's/# CONFIG_FEATURE_TOP_CPU_USAGE_PERCENTAGE is not set/CONFIG_FEATURE_TOP_CPU_USAGE_PERCENTAGE=y/' .config
         
         make oldconfig
+        echo "✅ BusyBox 配置完成"
 
     - name: Build BusyBox
       run: |
-        cd busybox-1.36.1
+        cd linux2/busybox-1.36.1
         
         if [ -f "busybox" ] && [ "${{ steps.busybox-cache.outputs.cache-hit }}" == "true" ]; then
           echo "✅ 使用缓存的 BusyBox，跳过编译"
@@ -285,11 +369,14 @@ jobs:
           echo "✅ BusyBox 编译完成"
         fi
         
+        echo "📊 BusyBox 文件信息:"
         ls -lh busybox
 
     # ===== 创建 rootfs =====
     - name: Create rootfs
       run: |
+        cd linux2
+        
         echo "📦 创建 rootfs..."
         
         # 创建目录结构
@@ -340,11 +427,13 @@ jobs:
         find . | cpio -o -H newc > ../rootfs.cpio
         cd ..
         
-        echo "rootfs.cpio 大小: $(du -h rootfs.cpio | cut -f1)"
+        echo "📊 rootfs.cpio 大小: $(du -h rootfs.cpio | cut -f1)"
 
     # ===== 创建 ISO =====
     - name: Create bootable ISO
       run: |
+        cd linux2
+        
         echo "💿 创建启动 ISO..."
         
         mkdir -p iso/boot/grub
@@ -371,14 +460,14 @@ jobs:
         grub-mkrescue -o "${{ env.ISO_NAME }}" iso/
         
         echo "✅ ISO 创建完成: ${{ env.ISO_NAME }}"
-        echo "ISO 大小: $(du -h ${{ env.ISO_NAME }} | cut -f1)"
+        echo "📊 ISO 大小: $(du -h ${{ env.ISO_NAME }} | cut -f1)"
 
     # ===== 上传 ISO 到 Artifacts（备份）=====
     - name: Upload ISO to Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.ISO_NAME }}
-        path: ${{ env.ISO_NAME }}
+        path: linux2/${{ env.ISO_NAME }}
         retention-days: 30
 
     # ===== 创建 GitHub Release =====
@@ -415,9 +504,9 @@ jobs:
             
           ### 📊 构建统计
           - **缓存命中**: 内核:${{ steps.kernel-cache.outputs.cache-hit }}, BusyBox:${{ steps.busybox-cache.outputs.cache-hit }}
-          - **ISO大小**: $(du -h ${{ env.ISO_NAME }} | cut -f1)
+          - **ISO大小**: $(du -h linux2/${{ env.ISO_NAME }} | cut -f1)
         files: |
-          ${{ env.ISO_NAME }}
+          linux2/${{ env.ISO_NAME }}
         draft: false
         prerelease: false
         generate_release_notes: false
@@ -428,6 +517,8 @@ jobs:
     - name: Build summary
       if: always()
       run: |
+        cd linux2
+        
         echo "## 📊 构建完成报告" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
@@ -439,7 +530,7 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         
         echo "### 缓存信息" >> $GITHUB_STEP_SUMMARY
-        echo "- **内核缓存Key**: \`kernel-6.18-${{ hashFiles('linux-6.18/**') }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **内核缓存Key**: \`kernel-6.18-${{ hashFiles('linux2/linux-6.18/**') }}\`" >> $GITHUB_STEP_SUMMARY
         echo "- **内核缓存命中**: ${{ steps.kernel-cache.outputs.cache-hit }}" >> $GITHUB_STEP_SUMMARY
         echo "- **BusyBox缓存命中**: ${{ steps.busybox-cache.outputs.cache-hit }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
