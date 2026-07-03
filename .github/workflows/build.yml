@@ -1,10 +1,236 @@
+name: Build Linux Kernel 6.18 with BusyBox
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    outputs:
+      release_title: ${{ steps.set-release-info.outputs.release_title }}
+      release_tag: ${{ steps.set-release-info.outputs.release_tag }}
+      iso_name: ${{ steps.set-release-info.outputs.iso_name }}
+
+    steps:
+    # ================================================================
+    #  克隆仓库
+    # ================================================================
+    - name: Clone repository
+      uses: actions/checkout@v4
+      with:
+        repository: daren866/linux2
+        path: linux2
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Show repository info
+      run: |
+        cd linux2
+        echo "📂 当前工作目录: $(pwd)"
+        echo "仓库大小: $(du -sh . | cut -f1)"
+        echo "文件数量: $(find . -type f | wc -l)"
+        ls -la
+
+    # ================================================================
+    #  设置 Release 信息
+    # ================================================================
+    - name: Set release info
+      id: set-release-info
+      run: |
+        cd linux2
+        UNIX_TIMESTAMP=$(date +%s)
+        RELEASE_NUMBER=$((UNIX_TIMESTAMP * 9178666))
+        RELEASE_TITLE="Linux6 通用版-${RELEASE_NUMBER}"
+        ISO_NAME="linux6-${UNIX_TIMESTAMP}.iso"
+        echo "release_title=$RELEASE_TITLE" >> $GITHUB_OUTPUT
+        echo "release_tag=linux6-${UNIX_TIMESTAMP}" >> $GITHUB_OUTPUT
+        echo "iso_name=$ISO_NAME" >> $GITHUB_OUTPUT
+        echo "release_number=$RELEASE_NUMBER" >> $GITHUB_OUTPUT
+        echo "RELEASE_TITLE=$RELEASE_TITLE" >> $GITHUB_ENV
+        echo "ISO_NAME=$ISO_NAME" >> $GITHUB_ENV
+
+    # ================================================================
+    #  缓存
+    # ================================================================
+    - name: Cache kernel build
+      uses: actions/cache@v4
+      id: kernel-cache
+      with:
+        path: linux2/linux-6.18
+        key: kernel-6.18-${{ hashFiles('linux2/linux-6.18/**') }}
+        restore-keys: |
+          kernel-6.18-
+
+    - name: Cache busybox build
+      uses: actions/cache@v4
+      id: busybox-cache
+      with:
+        path: linux2/busybox-1.36.1
+        key: busybox-1.36.1-${{ hashFiles('linux2/busybox-1.36.1/**') }}
+        restore-keys: |
+          busybox-1.36.1-
+
+    # ================================================================
+    #  安装依赖
+    # ================================================================
+    - name: Install dependencies
+      run: |
+        echo "📦 安装编译依赖..."
+        sudo apt-get update -y
+        sudo apt-get install -y \
+          build-essential gcc g++ make cmake \
+          libncurses-dev flex bison libssl-dev \
+          libelf-dev libudev-dev libpci-dev libiberty-dev autoconf \
+          gawk libgmp-dev libmpc-dev libmpfr-dev texinfo \
+          dwarves python3 python3-dev bc rsync \
+          git wget curl xz-utils cpio \
+          xorriso grub-pc-bin grub-common mtools dosfstools \
+          device-tree-compiler
+        echo "✅ 依赖安装完成"
+
+    # ================================================================
+    #  下载内核源码
+    # ================================================================
+    - name: Sync kernel source
+      if: steps.kernel-cache.outputs.cache-hit != 'true'
+      run: |
+        cd linux2
+        if [ -d "linux-6.18" ] && [ -f "linux-6.18/Makefile" ]; then
+          echo "✅ 找到内核源码"
+        else
+          echo "📥 下载 Linux 6.18..."
+          wget -q --show-progress https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz
+          tar -xf linux-6.18.tar.xz
+          rm -f linux-6.18.tar.xz
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add linux-6.18/
+          git commit -m "🤖 Auto-download kernel 6.18 [skip ci]" || true
+          git push || true
+        fi
+
+    # ================================================================
+    #  下载 BusyBox 源码
+    # ================================================================
+    - name: Sync BusyBox source
+      if: steps.busybox-cache.outputs.cache-hit != 'true'
+      run: |
+        cd linux2
+        if [ -d "busybox-1.36.1" ] && [ -f "busybox-1.36.1/Makefile" ]; then
+          echo "✅ 找到 BusyBox 源码"
+        else
+          echo "📥 下载 BusyBox 1.36.1..."
+          wget -q --show-progress https://busybox.net/downloads/busybox-1.36.1.tar.bz2
+          tar -xf busybox-1.36.1.tar.bz2
+          rm -f busybox-1.36.1.tar.bz2
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add busybox-1.36.1/
+          git commit -m "🤖 Auto-download BusyBox 1.36.1 [skip ci]" || true
+          git push || true
+        fi
+
+    # ================================================================
+    #  配置内核
+    # ================================================================
+    - name: Configure kernel
+      run: |
+        cd linux2/linux-6.18
+        echo "🔧 生成通用 x86_64 内核配置..."
+        make ARCH=x86_64 defconfig
+        echo "🔧 补全通用硬件支持..."
+        scripts/config --enable BLK_DEV_INITRD
+        scripts/config --enable DEVTMPFS
+        scripts/config --enable DEVTMPFS_MOUNT
+        scripts/config --enable VIRTIO
+        scripts/config --enable VIRTIO_PCI
+        scripts/config --enable VIRTIO_BLK
+        scripts/config --enable VIRTIO_NET
+        scripts/config --enable VIRTIO_CONSOLE
+        scripts/config --enable VIRTIO_GPU
+        scripts/config --enable ATA
+        scripts/config --enable AHCI
+        scripts/config --enable BLK_DEV_NVME
+        scripts/config --enable SCSI
+        scripts/config --enable BLK_DEV_SD
+        scripts/config --enable BLK_DEV_SR
+        scripts/config --enable EXT4_FS
+        scripts/config --enable XFS_FS
+        scripts/config --enable BTRFS_FS
+        scripts/config --enable VFAT_FS
+        scripts/config --enable FAT_DEFAULT_UTF8
+        scripts/config --enable NTFS3_FS
+        scripts/config --enable ISO9660_FS
+        scripts/config --enable TMPFS
+        scripts/config --enable PROC_FS
+        scripts/config --enable SYSFS
+        scripts/config --enable ETHERNET
+        scripts/config --enable E1000
+        scripts/config --enable E1000E
+        scripts/config --enable IGB
+        scripts/config --enable R8169
+        scripts/config --enable 8139TOO
+        scripts/config --enable TIGON3
+        scripts/config --enable WLAN
+        scripts/config --enable IWLWIFI
+        scripts/config --enable ATH9K
+        scripts/config --enable RT2X00
+        scripts/config --enable DRM
+        scripts/config --enable DRM_I915
+        scripts/config --enable DRM_AMDGPU
+        scripts/config --enable DRM_NOUVEAU
+        scripts/config --enable DRM_VMWGFX
+        scripts/config --enable DRM_VIRTIO_GPU
+        scripts/config --enable DRM_BOCHS
+        scripts/config --enable FB
+        scripts/config --enable FRAMEBUFFER_CONSOLE
+        scripts/config --enable USB_SUPPORT
+        scripts/config --enable USB
+        scripts/config --enable USB_XHCI_HCD
+        scripts/config --enable USB_EHCI_HCD
+        scripts/config --enable USB_UHCI_HCD
+        scripts/config --enable USB_STORAGE
+        scripts/config --enable USB_HID
+        scripts/config --enable INPUT_EVDEV
+        scripts/config --enable KEYBOARD_ATKBD
+        scripts/config --enable MOUSE_PS2
+        scripts/config --enable HID
+        scripts/config --enable HID_GENERIC
+        scripts/config --enable SOUND
+        scripts/config --enable SND
+        scripts/config --enable SND_HDA_INTEL
+        scripts/config --enable SND_HDA_CODEC_REALTEK
+        scripts/config --enable SND_USB_AUDIO
+        scripts/config --enable ACPI
+        scripts/config --enable CPU_FREQ
+        scripts/config --enable CPU_IDLE
+        scripts/config --enable HWMON
+        scripts/config --enable SENSORS_CORETEMP
+        scripts/config --enable SENSORS_K10TEMP
+        make ARCH=x86_64 olddefconfig
+        echo "✅ 通用内核配置完成"
+
     # ================================================================
     #  编译内核
     #
-    #  timeconst.bc 修复：
-    #    1. 尝试从 kernel.org 下载真正的 timeconst.bc
-    #    2. 下载失败则用 fallback（需要正确 bc 语法 + 通过 stdin 传 HZ）
-    #    3. 验证时 echo 1000 | bc -q ...（bc 从 stdin 读 HZ）
+    #  timeconst.bc 修复原理：
+    #    内核 Makefile 中的依赖链：
+    #      include/generated/timeconst.h ← kernel/time/timeconst.bc
+    #    真正的 timeconst.bc 末尾是：
+    #      hz = read()    ← 从 stdin 读取 CONFIG_HZ 值
+    #      timeconst(hz)
+    #    内核构建系统调用：echo $(CONFIG_HZ) | bc -q timeconst.bc > timeconst.h
+    #    所以：
+    #      1. 优先从 kernel.org 下载真正的 timeconst.bc
+    #      2. 下载失败则用 fallback（同样需要 stdin 读 HZ）
+    #      3. 验证时必须 echo 1000 | bc -q ...（给 stdin 输入）
     # ================================================================
     - name: Build kernel
       run: |
@@ -69,10 +295,11 @@
               'timeconst(hz)' > kernel/time/timeconst.bc
             echo "✅ fallback timeconst.bc 已创建"
           fi
-          echo "--- timeconst.bc 验证 ---"
+          echo "--- timeconst.bc 前5行 ---"
+          head -5 kernel/time/timeconst.bc
+          echo "--- bc 验证（echo 1000 给 stdin，输出前5行）---"
           echo 1000 | bc -q kernel/time/timeconst.bc | head -5
-          echo "...(以上为前5行，验证通过)"
-          echo "-------------------------"
+          echo "--------------------------"
           make -j"$CPU_CORES" ARCH=x86_64 bzImage 2>&1 | tee build.log
           make -j"$CPU_CORES" ARCH=x86_64 modules 2>&1 | tee -a build.log
           if [ ! -f "arch/x86/boot/bzImage" ]; then
@@ -85,3 +312,160 @@
           echo "✅ 编译完成，耗时: $((duration / 60)) 分钟 $((duration % 60)) 秒"
         fi
         ls -lh arch/x86/boot/bzImage
+
+    # ================================================================
+    #  编译 BusyBox
+    # ================================================================
+    - name: Build BusyBox
+      run: |
+        cd linux2/busybox-1.36.1
+        if [ -f "busybox" ] && [ "${{ steps.busybox-cache.outputs.cache-hit }}" == "true" ]; then
+          echo "✅ 使用缓存的 BusyBox"
+        else
+          echo "🔨 编译 BusyBox..."
+          make defconfig
+          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/CONFIG_TC=y/# CONFIG_TC is not set/' .config 2>/dev/null || true
+          make -j"$(nproc)"
+          make install
+          echo "✅ BusyBox 编译完成"
+        fi
+        ls -lh busybox
+
+    # ================================================================
+    #  创建 rootfs
+    # ================================================================
+    - name: Create rootfs
+      run: |
+        cd linux2
+        echo "📦 创建 rootfs..."
+        mkdir -p rootfs/{bin,sbin,usr/bin,usr/sbin,etc,proc,sys,dev,lib,lib64,tmp,var,run,root}
+        cp -a busybox-1.36.1/_install/* rootfs/
+        sudo mknod -m 666 rootfs/dev/null c 1 3
+        sudo mknod -m 644 rootfs/dev/console c 5 1
+        printf '%s\n' \
+          '#!/bin/busybox sh' \
+          '/bin/busybox --install -s' \
+          '' \
+          'echo "========================================="' \
+          'echo "Mini Linux 6.18 with BusyBox"' \
+          'echo "========================================="' \
+          'echo ""' \
+          '' \
+          'mount -t proc none /proc' \
+          'mount -t sysfs none /sys' \
+          'mount -t devtmpfs none /dev' \
+          'ip link set lo up' \
+          '' \
+          'echo "系统信息:"' \
+          'echo "  内核: $(uname -r) $(uname -m)"' \
+          'echo "  内存: $(grep MemTotal /proc/meminfo)"' \
+          '' \
+          'echo "可用命令: ls, cat, ps, top, vi, grep"' \
+          'echo "输入 poweroff 关机"' \
+          'echo ""' \
+          '' \
+          'exec /bin/sh' > rootfs/init
+        chmod +x rootfs/init
+        echo "root:x:0:0:root:/root:/bin/sh" > rootfs/etc/passwd
+        echo "root:x:0:" > rootfs/etc/group
+        echo "nameserver 8.8.8.8" > rootfs/etc/resolv.conf
+        cd rootfs
+        find . | cpio -o -H newc > ../rootfs.cpio
+        cd ..
+        echo "📊 rootfs.cpio 大小: $(du -h rootfs.cpio | cut -f1)"
+
+    # ================================================================
+    #  创建 ISO
+    # ================================================================
+    - name: Create bootable ISO
+      id: create-iso
+      run: |
+        cd linux2
+        echo "💿 创建启动 ISO..."
+        mkdir -p iso/boot/grub
+        cp linux-6.18/arch/x86/boot/bzImage iso/boot/vmlinuz
+        cp rootfs.cpio iso/boot/initramfs.cpio
+        printf '%s\n' \
+          'set default=0' \
+          'set timeout=3' \
+          '' \
+          'menuentry "Mini Linux 6.18" {' \
+          '  linux /boot/vmlinuz quiet' \
+          '  initrd /boot/initramfs.cpio' \
+          '}' \
+          '' \
+          'menuentry "Mini Linux 6.18 (Debug)" {' \
+          '  linux /boot/vmlinuz loglevel=7' \
+          '  initrd /boot/initramfs.cpio' \
+          '}' > iso/boot/grub/grub.cfg
+        ISO_NAME="${{ steps.set-release-info.outputs.iso_name }}"
+        grub-mkrescue -o "$ISO_NAME" iso/
+        echo "✅ ISO 创建完成: $ISO_NAME"
+        ls -lh "$ISO_NAME"
+
+    # ================================================================
+    #  上传 Artifact
+    # ================================================================
+    - name: Upload ISO to Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.set-release-info.outputs.iso_name }}
+        path: linux2/${{ steps.set-release-info.outputs.iso_name }}
+        retention-days: 30
+
+    # ================================================================
+    #  创建 Release
+    # ================================================================
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: ${{ steps.set-release-info.outputs.release_title }}
+        tag_name: ${{ steps.set-release-info.outputs.release_tag }}
+        body: |
+          ## Linux 6.18 通用版发布
+
+          ### 包含组件
+          - Linux 内核 6.18（通用硬件支持）
+          - BusyBox 1.36.1（静态编译）
+          - 最小 rootfs 文件系统
+
+          ### 硬件支持
+          - **存储**: AHCI SATA, NVMe, SCSI, USB Storage
+          - **网络**: Intel E1000/e1000e/IGB, Realtek R8169/8139, Broadcom Tigon3
+          - **无线**: Intel iwlwifi, Atheros ath9k, Ralink rt2x00
+          - **显卡**: Intel i915, AMD AMDGPU, NVIDIA Nouveau, VirtIO GPU, VMware
+          - **音频**: HDA Intel (Realtek), USB Audio
+          - **USB**: xHCI / eHCI / uHCI 全系列
+          - **虚拟化**: VirtIO 全套, VMware, Hyper-V
+
+          ### 使用说明
+          1. 下载 ISO 文件
+          2. 在虚拟机或物理机中加载 ISO 启动
+          3. 启动后自动进入 Shell
+
+          ### 构建信息
+          - **Unix时间戳**: ${{ steps.set-release-info.outputs.release_number }}
+          - **缓存命中**: 内核=${{ steps.kernel-cache.outputs.cache-hit }}, BusyBox=${{ steps.busybox-cache.outputs.cache-hit }}
+        files: |
+          linux2/${{ steps.set-release-info.outputs.iso_name }}
+        draft: false
+        prerelease: false
+        generate_release_notes: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # ================================================================
+    #  构建摘要
+    # ================================================================
+    - name: Build summary
+      if: always()
+      run: |
+        cd linux2
+        echo "## 📊 构建完成报告" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Release**: ${{ steps.set-release-info.outputs.release_title }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **ISO**: ${{ steps.set-release-info.outputs.iso_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **内核**: $(du -h linux-6.18/arch/x86/boot/bzImage 2>/dev/null | cut -f1 || echo 'N/A')" >> $GITHUB_STEP_SUMMARY
+        echo "- **BusyBox**: $(du -h busybox-1.36.1/busybox 2>/dev/null | cut -f1 || echo 'N/A')" >> $GITHUB_STEP_SUMMARY
+        echo "- **rootfs.cpio**: $(du -h rootfs.cpio 2>/dev/null | cut -f1 || echo 'N/A')" >> $GITHUB_STEP_SUMMARY
