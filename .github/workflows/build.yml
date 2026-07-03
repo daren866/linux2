@@ -220,11 +220,11 @@ jobs:
     # ================================================================
     #  编译内核
     #
-    #  timeconst.bc 修复原理：
-    #  内核 Makefile 中有规则：
-    #    include/generated/timeconst.h  ←  kernel/time/timeconst.bc
-    #  如果 timeconst.bc 源文件缺失，make 报 No rule to make target
-    #  修复：创建 timeconst.bc 源文件（bc 脚本），构建系统自动用它生成 .h
+    #  timeconst.bc 修复：
+    #    内核 Makefile: include/generated/timeconst.h ← kernel/time/timeconst.bc
+    #    缺少 .bc 源文件 → make 报 No rule to make target
+    #    修复：创建正确的 bc 脚本（注意 SCALE 不能用小写 scale，是保留字）
+    #    构建系统执行: bc -q timeconst.bc > include/generated/timeconst.h
     # ================================================================
     - name: Build kernel
       run: |
@@ -238,26 +238,43 @@ jobs:
           echo "CPU核心数: $CPU_CORES"
           make clean || true
           echo "🔍 检查 kernel/time/timeconst.bc ..."
-          if [ ! -f kernel/time/timeconst.bc ]; then
-            echo "⚠️ timeconst.bc 缺失，正在创建..."
+          if [ ! -s kernel/time/timeconst.bc ]; then
+            echo "⚠️ timeconst.bc 缺失，尝试从 kernel.org 下载..."
+            wget -q --timeout=20 \
+              -O kernel/time/timeconst.bc \
+              "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/kernel/time/timeconst.bc?h=v6.18" 2>/dev/null || true
+          fi
+          if [ ! -s kernel/time/timeconst.bc ]; then
+            echo "⚠️ 下载失败，创建正确的 timeconst.bc ..."
             printf '%s\n' \
-              '# timeconst.bc - time constant generator for kernel' \
-              'define scale(x) {' \
+              '# timeconst.bc - generate timeconst.h from HZ' \
+              '' \
+              'define SCALE(T) {' \
               '  auto s' \
               '  s = 1000000000 / HZ' \
-              '  return (x + s - 1) / s' \
+              '  return (T + s - 1) / s' \
               '}' \
-              'scale(1)' \
-              'scale(1000)' \
-              'scale(1000000)' \
-              'HZ' > kernel/time/timeconst.bc
+              '' \
+              'HZ = 1000' \
+              'scale = 0' \
+              '' \
+              'print "/* Automatically generated - do not edit */\n"' \
+              'print "#ifndef __LINUX_TIMECONST_H\n"' \
+              'print "#define __LINUX_TIMECONST_H\n"' \
+              'print "\n"' \
+              'print "#include <vdso/timeconst.h>\n"' \
+              'print "\n"' \
+              'print "#endif\n"' \
+              > kernel/time/timeconst.bc
             echo "✅ timeconst.bc 已创建"
-          else
-            echo "✅ timeconst.bc 已存在"
           fi
           echo "--- timeconst.bc 内容 ---"
           cat kernel/time/timeconst.bc
           echo "-------------------------"
+          echo "🔍 验证 bc 处理..."
+          echo "--- bc 输出（应为有效 C 头文件）---"
+          bc -q kernel/time/timeconst.bc
+          echo "-----------------------------------"
           make -j"$CPU_CORES" ARCH=x86_64 bzImage 2>&1 | tee build.log
           make -j"$CPU_CORES" ARCH=x86_64 modules 2>&1 | tee -a build.log
           if [ ! -f "arch/x86/boot/bzImage" ]; then
@@ -291,7 +308,7 @@ jobs:
         ls -lh busybox
 
     # ================================================================
-    #  创建 rootfs
+    #  创建 rootfs（printf 代替 heredoc，无 YAML 缩进陷阱）
     # ================================================================
     - name: Create rootfs
       run: |
@@ -316,9 +333,9 @@ jobs:
           'ip link set lo up' \
           '' \
           'echo "系统信息:"' \
-          'echo "- 内核版本: $(cat /proc/version | cut -d'"'"' '"'"' -f3)"' \
-          'echo "- 可用内存: $(grep MemTotal /proc/meminfo | awk '"'"'{print $2/1024}'"'"') MB"' \
-          'echo ""' \
+          'echo "  内核: $(uname -r) $(uname -m)"' \
+          'echo "  内存: $(grep MemTotal /proc/meminfo)"' \
+          '' \
           'echo "可用命令: ls, cat, ps, top, vi, grep"' \
           'echo "输入 poweroff 关机"' \
           'echo ""' \
@@ -334,7 +351,7 @@ jobs:
         echo "📊 rootfs.cpio 大小: $(du -h rootfs.cpio | cut -f1)"
 
     # ================================================================
-    #  创建 ISO
+    #  创建 ISO（printf 代替 heredoc）
     # ================================================================
     - name: Create bootable ISO
       id: create-iso
